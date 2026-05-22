@@ -92,3 +92,26 @@ export interface RunResult {
   validation?: ValidationReport;
   summary: string;
 }
+
+export type StateEventType =
+  | "start"
+  | "model_call"
+  | "model_text"
+  | "tool_call"
+  | "tool_result"
+  | "tool_rejected"
+  | "finish"
+  | "max_steps"
+  | "error";
+
+export interface StateEvent {
+  step: number;
+  type: StateEventType;
+  timestamp: string;
+  tool?: string;
+  input?: unknown;
+  output?: unknown;
+  message?: string;
+}
+
+export type LoopTerminationReason = "finished" | "max_steps" | "error";

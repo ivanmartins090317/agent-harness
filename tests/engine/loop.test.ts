@@ -3,9 +3,10 @@ import { runLoop } from "../../src/engine/loop.js";
 import { createRouter } from "../../src/engine/router.js";
 import type { ChatMessage, LLMResponse } from "../../src/engine/types.js";
 import type { LLMProvider } from "../../src/providers/llm-provider.js";
+import { loadEvents } from "../../src/memory/event-store.js";
+import { tddFile } from "../../src/memory/paths.js";
 import { createDefaultRegistry } from "../../src/tools/index.js";
 import { writeFileEnsured } from "../../src/utils/fs.js";
-import { tddFile } from "../../src/memory/paths.js";
 import { makeTmpProject, silentLogger, type TmpProject } from "../helpers/tmp.js";
 
 let proj: TmpProject;
@@ -125,5 +126,95 @@ describe("runLoop", () => {
       maxSteps: 5,
     });
     expect(result.steps).toBe(2);
+  });
+
+  it("bate no limite de maxSteps quando o agente nunca encerra", async () => {
+    await writeFileEnsured(`${proj.path}/x.txt`, "conteúdo");
+
+    const provider: LLMProvider = {
+      name: "fake",
+      async generate() {
+        return {
+          stopReason: "tool_use",
+          content: [
+            { type: "text", text: "lendo..." },
+            {
+              type: "tool_use",
+              id: `u-${Math.random()}`,
+              name: "read_file",
+              input: { path: "x.txt" },
+            },
+          ],
+        };
+      },
+    };
+    const router = createRouter({ plan: provider, exec: provider });
+
+    const result = await runLoop({
+      task: { taskId: "t-loop", projectPath: proj.path, tdd: "infinito" },
+      registry: createDefaultRegistry(),
+      router,
+      logger: silentLogger(),
+      confirm: async () => true,
+      maxSteps: 3,
+    });
+
+    expect(result.steps).toBe(3);
+    expect(result.terminationReason).toBe("max_steps");
+  });
+
+  it("persiste eventos padronizados no .jsonl em ai/state/", async () => {
+    await writeFileEnsured(`${proj.path}/x.txt`, "conteúdo");
+
+    const responses: LLMResponse[] = [
+      {
+        stopReason: "tool_use",
+        content: [
+          { type: "text", text: "vou ler" },
+          {
+            type: "tool_use",
+            id: "u1",
+            name: "read_file",
+            input: { path: "x.txt" },
+          },
+        ],
+      },
+      {
+        stopReason: "end_turn",
+        content: [{ type: "text", text: "feito" }],
+      },
+    ];
+    const provider: LLMProvider = {
+      name: "fake",
+      async generate() {
+        return responses.shift()!;
+      },
+    };
+    const router = createRouter({ plan: provider, exec: provider });
+
+    const result = await runLoop({
+      task: { taskId: "t-events", projectPath: proj.path, tdd: "x" },
+      registry: createDefaultRegistry(),
+      router,
+      logger: silentLogger(),
+      confirm: async () => true,
+      maxSteps: 5,
+    });
+
+    expect(result.terminationReason).toBe("finished");
+
+    const events = await loadEvents(proj.path, "t-events");
+    const types = events.map((e) => e.type);
+    expect(types[0]).toBe("start");
+    expect(types).toContain("model_call");
+    expect(types).toContain("model_text");
+    expect(types).toContain("tool_call");
+    expect(types).toContain("tool_result");
+    expect(types[types.length - 1]).toBe("finish");
+
+    for (const evt of events) {
+      expect(evt.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(typeof evt.step).toBe("number");
+    }
   });
 });

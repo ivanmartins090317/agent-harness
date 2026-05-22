@@ -32,6 +32,10 @@ export function stateFile(projectPath: string, taskId: string): string {
   return join(aiPaths(projectPath).stateDir, `${taskId}.json`);
 }
 
+export function eventsFile(projectPath: string, taskId: string): string {
+  return join(aiPaths(projectPath).stateDir, `${taskId}.jsonl`);
+}
+
 export function implementationDir(projectPath: string, taskId: string): string {
   return join(aiPaths(projectPath).implementationDir, taskId);
 }
