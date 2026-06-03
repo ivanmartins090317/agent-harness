@@ -1,19 +1,19 @@
 # agent-harness
 
-Harness em TypeScript para executar tarefas guiadas por **Tech Design Docs (TDD)** sobre um repositório alvo. Rodando externo ao projeto, o harness recebe um `project_path`, lê o TDD da tarefa, dispara um loop de agente usando Claude Opus, executa ferramentas (read/write/edit/search/terminal/git) com **confirmação humana para ações perigosas** e registra estado, decisões e resultados de validação dentro de `ai/` no projeto alvo.
+Harness em TypeScript para executar tarefas guiadas por **Tech Design Docs (TDD)** sobre um repositório alvo. Rodando externo ao projeto, o harness recebe um `project_path`, lê o TDD da tarefa, dispara um loop de agente usando um LLM configurável (Anthropic Claude ou qualquer modelo via OpenRouter), executa ferramentas (read/write/edit/search/terminal/git) com **confirmação humana para ações perigosas** e registra estado, decisões e resultados de validação dentro de `ai/` no projeto alvo.
 
 ## Requisitos
 
 - Node.js 20+
 - `npm` 10+
-- Chave da API Anthropic (`ANTHROPIC_API_KEY`)
+- Chave da API Anthropic (`ANTHROPIC_API_KEY`) e/ou OpenRouter (`OPENROUTER_API_KEY`)
 
 ## Instalação
 
 ```bash
 npm install
 cp .env.example .env
-# edite .env e preencha ANTHROPIC_API_KEY
+# edite .env e preencha as chaves de API desejadas
 npm run build
 ```
 
@@ -21,7 +21,10 @@ npm run build
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Obrigatória para executar `run` |
+| `ANTHROPIC_API_KEY` | — | Obrigatória quando `AGENT_PLAN_PROVIDER` ou `AGENT_EXEC_PROVIDER` = `anthropic` |
+| `OPENROUTER_API_KEY` | — | Obrigatória quando `AGENT_PLAN_PROVIDER` ou `AGENT_EXEC_PROVIDER` = `openrouter` |
+| `AGENT_PLAN_PROVIDER` | `anthropic` | Provider para a fase de planejamento: `anthropic` \| `openrouter` |
+| `AGENT_EXEC_PROVIDER` | `anthropic` | Provider para a fase de execução: `anthropic` \| `openrouter` |
 | `AGENT_PLAN_MODEL` | `claude-opus-4-20250514` | Modelo usado na fase de planejamento (1ª chamada) |
 | `AGENT_EXEC_MODEL` | `claude-opus-4-20250514` | Modelo usado na fase de execução (passos seguintes) |
 | `AGENT_MAX_STEPS` | `30` | Limite de iterações do loop |
@@ -32,16 +35,83 @@ npm run build
 
 ### `run` — executa uma tarefa
 
+#### Modo interativo (recomendado para uso local)
+
+Basta rodar `run` sem argumentos — se estiver em um terminal interativo, o wizard guiará você por todas as opções com navegação por setas:
+
+```bash
+node dist/index.js run
+```
+
+O wizard pergunta, em ordem:
+1. Caminho do repositório alvo (com validação de existência)
+2. ID da tarefa (com validação de que o TDD existe)
+3. Provider e modelo para a fase de **planejamento**
+4. Provider e modelo para a fase de **execução** (ou reusar os mesmos)
+5. Auto-aprovar ferramentas perigosas (sim/não)
+6. Pular validação ao final (sim/não)
+7. Resumo visual e confirmação antes de iniciar
+
+Para forçar o modo interativo mesmo com alguns argumentos já fornecidos:
+
+```bash
+node dist/index.js run --project /meu/repo -i
+```
+
+#### Modo não interativo (CI / scripts)
+
+Passe todos os argumentos diretamente:
+
 ```bash
 node dist/index.js run \
   --project /caminho/abs/para/repo-alvo \
   --task minha-task-id \
-  [--yes] [--skip-validation] [--max-steps 30]
+  [--yes] [--skip-validation] [--max-steps 30] \
+  [--plan-provider anthropic|openrouter] \
+  [--exec-provider anthropic|openrouter] \
+  [--plan-model <modelo>] \
+  [--exec-model <modelo>]
 ```
 
-- `--yes`: auto-aprova ferramentas perigosas (CI/uso não interativo).
-- `--skip-validation`: pula a etapa de `npm run test/lint/build` ao final.
-- `--max-steps`: sobrescreve `AGENT_MAX_STEPS`.
+| Argumento | Descrição |
+|---|---|
+| `--project` | Caminho absoluto para o repositório alvo |
+| `--task` | Identificador da tarefa |
+| `--yes` | Auto-aprova ferramentas perigosas (CI/uso não interativo) |
+| `--skip-validation` | Pula a etapa de `npm run test/lint/build` ao final |
+| `--max-steps` | Sobrescreve `AGENT_MAX_STEPS` |
+| `-i, --interactive` | Força o modo interativo mesmo com argumentos já fornecidos |
+| `--plan-provider` | Provider para a fase de planejamento (step 1). Sobrescreve `AGENT_PLAN_PROVIDER` |
+| `--exec-provider` | Provider para a fase de execução (demais steps). Sobrescreve `AGENT_EXEC_PROVIDER` |
+| `--plan-model` | Modelo para a fase de planejamento. Sobrescreve `AGENT_PLAN_MODEL` |
+| `--exec-model` | Modelo para a fase de execução. Sobrescreve `AGENT_EXEC_MODEL` |
+
+#### Exemplos não interativos
+
+```bash
+# Planejar com Claude Opus, executar com modelo gratuito via OpenRouter
+node dist/index.js run \
+  --project /meu/repo --task minha-task \
+  --plan-provider anthropic \
+  --exec-provider openrouter \
+  --exec-model qwen/qwen3-235b-a22b:free
+
+# 100% gratuito via OpenRouter (sem crédito na Anthropic)
+node dist/index.js run \
+  --project /meu/repo --task minha-task \
+  --plan-provider openrouter \
+  --plan-model meta-llama/llama-3.3-70b-instruct:free \
+  --exec-provider openrouter \
+  --exec-model google/gemma-3-27b-it:free
+```
+
+Modelos gratuitos recomendados no OpenRouter (suportam tool calling):
+
+| Modelo | Contexto |
+|---|---|
+| `meta-llama/llama-3.3-70b-instruct:free` | 128k |
+| `qwen/qwen3-235b-a22b:free` | 40k |
+| `google/gemma-3-27b-it:free` | 8k |
 
 ### `validate` — só validação
 
@@ -101,9 +171,9 @@ Ferramentas marcadas como perigosas **pedem confirmação humana via terminal** 
 ```
 src/
 ├─ index.ts            # CLI entrypoint
-├─ cli/                # comandos, parser, prompt de confirmação
+├─ cli/                # comandos, parser, wizard interativo, prompt de confirmação
 ├─ engine/             # loop principal, router, system prompt, tipos
-├─ providers/          # LLMProvider, AnthropicProvider, Gemini stub
+├─ providers/          # LLMProvider, AnthropicProvider, OpenRouterProvider, Gemini stub
 ├─ tools/              # registry + tools (read/write/edit/search/terminal/git)
 ├─ memory/             # tdd-loader, state, implementation, results, paths
 ├─ validation/         # validator.ts (npm test/lint/build)
@@ -113,7 +183,7 @@ src/
 
 Pontos chave:
 
-- **LLMProvider** é uma interface neutra. Hoje há a implementação `anthropic` (Claude Opus) e um stub `gemini` plugável. O `Router` escolhe o provider por fase (`plan` no 1º step, `exec` nos demais) — atualmente ambos apontam para Anthropic.
+- **LLMProvider** é uma interface neutra. Há implementações para `anthropic` (Claude) e `openrouter` (qualquer modelo via API OpenAI-compatível), além de um stub `gemini` plugável. O `Router` escolhe o provider por fase (`plan` no 1º step, `exec` nos demais) — configurável via variáveis de ambiente ou argumentos CLI.
 - **ToolRegistry** valida entrada via `zod`, expõe descritores JSON-Schema para o modelo e centraliza a flag `dangerous`.
 - **Memória** persiste decisões em `ai/state/<task_id>.json` e notas em `ai/implementation/<task_id>/notes.md` a cada step.
 - **Validação** detecta scripts de `npm` disponíveis (test/lint/build) e roda apenas os existentes via `execa`.
@@ -131,5 +201,7 @@ npm run typecheck                                   # tsc --noEmit
 ## Limitações conhecidas e próximos passos
 
 - Provider Gemini ainda é stub. A interface está pronta para uma implementação real (Google GenAI SDK) sem alterar o engine.
+- Modelos gratuitos do OpenRouter têm rate limits e latência maiores. Em tasks longas com `AGENT_MAX_STEPS` alto, considere isso no planejamento.
+- Nem todos os modelos do OpenRouter suportam tool calling nativo. Verifique a página do modelo em [openrouter.ai/models](https://openrouter.ai/models) antes de escolher.
 - Sem isolamento de processo / sandbox: o `run_terminal` herda o ambiente do processo pai. Para uso em CI multi-tenant, considere encapsular em container.
-- Sem `--watch`: cada invocação processa um TDD e termina. Multiplas tarefas podem ser orquestradas externamente (ex.: GitHub Actions ou um script shell).
+- Sem `--watch`: cada invocação processa um TDD e termina. Múltiplas tarefas podem ser orquestradas externamente (ex.: GitHub Actions ou um script shell).
